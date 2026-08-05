@@ -1,4 +1,5 @@
 import type { LanguageModel } from "ai";
+import type { Message } from "./memory.js";
 import type { ToolRegistry } from "../tools/registry.js";
 
 export interface AgentContext {
@@ -12,7 +13,13 @@ export interface Tool {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
-  execute(args: Record<string, unknown>, ctx: AgentContext): Promise<unknown>;
+  execute(args: ToolExecuteArgs): Promise<unknown>;
+}
+
+export interface ToolExecuteArgs {
+  args: Record<string, unknown>;
+  ctx: AgentContext;
+  signal?: AbortSignal;
 }
 
 export interface ToolCallRecord {
@@ -26,6 +33,7 @@ export interface ToolErrorRecord extends ToolCallRecord {
 
 export interface AgentRunResult {
   content: string;
+  messages: Message[];
   toolCalls: ToolCallRecord[];
   toolErrors: ToolErrorRecord[];
 }
@@ -37,4 +45,7 @@ export interface RunAgentOptions {
   modelId?: string;
   apiKey?: string;
   registry?: ToolRegistry;
+  abortSignal?: AbortSignal;
+  toolTimeout?: number;
+  messages?: Message[];
 }
