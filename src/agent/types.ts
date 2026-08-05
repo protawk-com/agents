@@ -1,4 +1,5 @@
 import type { LanguageModel } from "ai";
+import type { CompressionStrategy } from "../compression/strategy.js";
 import type { AgentHooks } from "./hooks.js";
 import type { Message } from "./memory.js";
 import type { ToolRegistry } from "../tools/registry.js";
@@ -56,4 +57,5 @@ export interface RunAgentOptions {
   toolTimeout?: number;
   messages?: Message[];
   hooks?: AgentHooks;
+  compression?: CompressionStrategy;
 }

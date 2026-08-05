@@ -178,6 +178,13 @@ export async function runAgent(
   const history = buildHistory(userPrompt, options);
   const tools = buildToolSet(registry, ctx, toolAbortSignal, hooks, toolCalls, toolErrors);
 
+  const compression = options.compression;
+  if (compression && compression.shouldCompress(history)) {
+    await compression.compress(history);
+  }
+
+  const activeMessages = history.filter(m => m.active !== false);
+
   hooks?.onStepStart?.(1);
 
   const result = await generateText({
@@ -187,7 +194,7 @@ export async function runAgent(
         apiKey: options.apiKey,
         modelId: options.modelId,
       }),
-    messages: toCoreMessages(history),
+    messages: toCoreMessages(activeMessages),
     tools,
     stopWhen: stepCountIs(maxSteps),
     ...(abortSignal ? { abortSignal } : {}),
@@ -231,6 +238,13 @@ export async function streamAgent(
   const history = buildHistory(userPrompt, options);
   const tools = buildToolSet(registry, ctx, toolAbortSignal, hooks, toolCalls, toolErrors);
 
+  const compression = options.compression;
+  if (compression && compression.shouldCompress(history)) {
+    await compression.compress(history);
+  }
+
+  const activeMessages = history.filter(m => m.active !== false);
+
   hooks?.onStepStart?.(1);
 
   const stream = streamText({
@@ -240,7 +254,7 @@ export async function streamAgent(
         apiKey: options.apiKey,
         modelId: options.modelId,
       }),
-    messages: toCoreMessages(history),
+    messages: toCoreMessages(activeMessages),
     tools,
     stopWhen: stepCountIs(maxSteps),
     ...(abortSignal ? { abortSignal } : {}),
