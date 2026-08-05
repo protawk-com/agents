@@ -2,17 +2,20 @@ import {
   generateText,
   jsonSchema,
   stepCountIs,
+  streamText,
   tool as defineAiTool,
   type ModelMessage,
   type ToolSet,
 } from "ai";
 import { createOpenRouterModel } from "../providers/openrouter.js";
-import { defaultToolRegistry } from "../tools/registry.js";
+import { defaultToolRegistry, type ToolRegistry } from "../tools/registry.js";
+import type { AgentHooks } from "./hooks.js";
 import type { Message } from "./memory.js";
 import type {
   AgentContext,
   AgentRunResult,
   RunAgentOptions,
+  StreamAgentResult,
   ToolCallRecord,
   ToolErrorRecord,
 } from "./types.js";
@@ -91,28 +94,15 @@ function buildAssistantMessage(
   return { role: "assistant", content };
 }
 
-export async function runAgent(
-  userPrompt: string,
+function buildToolSet(
+  registry: ToolRegistry,
   ctx: AgentContext,
-  options: RunAgentOptions = {}
-): Promise<AgentRunResult> {
-  const maxSteps = options.maxSteps ?? 10;
-  const toolTimeout = options.toolTimeout;
-  const abortSignal = options.abortSignal;
-  const registry = options.registry ?? defaultToolRegistry;
-  const toolCalls: ToolCallRecord[] = [];
-  const toolErrors: ToolErrorRecord[] = [];
-  const toolAbortSignal = deriveAbortSignal(abortSignal, toolTimeout);
-
-  const history: Message[] = [...(options.messages ?? [])];
-  history.push({ role: "user", content: userPrompt });
-
-  const systemPrompt = options.systemPrompt;
-  if (systemPrompt && history.length === 1) {
-    history.unshift({ role: "system", content: systemPrompt });
-  }
-
-  const tools = Object.fromEntries(
+  toolAbortSignal: AbortSignal | undefined,
+  hooks: AgentHooks | undefined,
+  toolCalls: ToolCallRecord[],
+  toolErrors: ToolErrorRecord[],
+): ToolSet {
+  return Object.fromEntries(
     registry.list().map((registeredTool) => [
       registeredTool.name,
       defineAiTool({
@@ -120,6 +110,10 @@ export async function runAgent(
         inputSchema: jsonSchema(registeredTool.parameters),
         execute: async (args: unknown) => {
           const normalizedArgs = args as Record<string, unknown>;
+
+          if (hooks?.onToolCall) {
+            await hooks.onToolCall({ name: registeredTool.name, args: normalizedArgs });
+          }
 
           let executionPromise = registeredTool.execute({
             args: normalizedArgs,
@@ -137,6 +131,7 @@ export async function runAgent(
               name: registeredTool.name,
               args: normalizedArgs,
             });
+            hooks?.onToolResult?.({ name: registeredTool.name, args: normalizedArgs, result });
             return result;
           } catch (error) {
             const message = toErrorMessage(error);
@@ -145,12 +140,45 @@ export async function runAgent(
               args: normalizedArgs,
               error: message,
             });
+            hooks?.onToolResult?.({ name: registeredTool.name, args: normalizedArgs, result: undefined, error: message });
             return { error: message };
           }
         },
       }),
     ])
   ) as ToolSet;
+}
+
+function buildHistory(userPrompt: string, options: RunAgentOptions): Message[] {
+  const history: Message[] = [...(options.messages ?? [])];
+  history.push({ role: "user", content: userPrompt });
+
+  const systemPrompt = options.systemPrompt;
+  if (systemPrompt && history.length === 1) {
+    history.unshift({ role: "system", content: systemPrompt });
+  }
+
+  return history;
+}
+
+export async function runAgent(
+  userPrompt: string,
+  ctx: AgentContext,
+  options: RunAgentOptions = {}
+): Promise<AgentRunResult> {
+  const maxSteps = options.maxSteps ?? 10;
+  const toolTimeout = options.toolTimeout;
+  const abortSignal = options.abortSignal;
+  const registry = options.registry ?? defaultToolRegistry;
+  const toolCalls: ToolCallRecord[] = [];
+  const toolErrors: ToolErrorRecord[] = [];
+  const hooks = options.hooks;
+  const toolAbortSignal = deriveAbortSignal(abortSignal, toolTimeout);
+
+  const history = buildHistory(userPrompt, options);
+  const tools = buildToolSet(registry, ctx, toolAbortSignal, hooks, toolCalls, toolErrors);
+
+  hooks?.onStepStart?.(1);
 
   const result = await generateText({
     model:
@@ -163,6 +191,16 @@ export async function runAgent(
     tools,
     stopWhen: stepCountIs(maxSteps),
     ...(abortSignal ? { abortSignal } : {}),
+    onStepFinish: (step) => {
+      hooks?.onStepFinish?.(
+        step.stepNumber,
+        step.text,
+        step.toolCalls?.map((tc) => ({
+          name: tc.toolName,
+          args: tc.input as Record<string, unknown>,
+        })) ?? [],
+      );
+    },
   });
 
   const assistantMessage = buildAssistantMessage(result.text, toolCalls);
@@ -173,5 +211,67 @@ export async function runAgent(
     messages: history,
     toolCalls,
     toolErrors,
+  };
+}
+
+export async function streamAgent(
+  userPrompt: string,
+  ctx: AgentContext,
+  options: RunAgentOptions = {}
+): Promise<StreamAgentResult> {
+  const maxSteps = options.maxSteps ?? 10;
+  const toolTimeout = options.toolTimeout;
+  const abortSignal = options.abortSignal;
+  const registry = options.registry ?? defaultToolRegistry;
+  const toolCalls: ToolCallRecord[] = [];
+  const toolErrors: ToolErrorRecord[] = [];
+  const hooks = options.hooks;
+  const toolAbortSignal = deriveAbortSignal(abortSignal, toolTimeout);
+
+  const history = buildHistory(userPrompt, options);
+  const tools = buildToolSet(registry, ctx, toolAbortSignal, hooks, toolCalls, toolErrors);
+
+  hooks?.onStepStart?.(1);
+
+  const stream = streamText({
+    model:
+      options.model ??
+      createOpenRouterModel({
+        apiKey: options.apiKey,
+        modelId: options.modelId,
+      }),
+    messages: toCoreMessages(history),
+    tools,
+    stopWhen: stepCountIs(maxSteps),
+    ...(abortSignal ? { abortSignal } : {}),
+    onStepFinish: (step) => {
+      hooks?.onStepFinish?.(
+        step.stepNumber,
+        step.text,
+        step.toolCalls?.map((tc) => ({
+          name: tc.toolName,
+          args: tc.input as Record<string, unknown>,
+        })) ?? [],
+      );
+    },
+  });
+
+  const resultPromise = (async (): Promise<AgentRunResult> => {
+    const text = await stream.text;
+    const assistantMessage = buildAssistantMessage(text, toolCalls);
+    history.push(assistantMessage);
+
+    return {
+      content: text,
+      messages: history,
+      toolCalls,
+      toolErrors,
+    };
+  })();
+
+  return {
+    textStream: stream.textStream,
+    fullStream: stream.fullStream,
+    result: resultPromise,
   };
 }

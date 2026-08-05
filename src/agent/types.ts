@@ -1,4 +1,5 @@
 import type { LanguageModel } from "ai";
+import type { AgentHooks } from "./hooks.js";
 import type { Message } from "./memory.js";
 import type { ToolRegistry } from "../tools/registry.js";
 
@@ -38,6 +39,12 @@ export interface AgentRunResult {
   toolErrors: ToolErrorRecord[];
 }
 
+export interface StreamAgentResult {
+  textStream: AsyncIterable<string>;
+  fullStream: AsyncIterable<unknown>;
+  result: Promise<AgentRunResult>;
+}
+
 export interface RunAgentOptions {
   maxSteps?: number;
   systemPrompt?: string;
@@ -48,4 +55,5 @@ export interface RunAgentOptions {
   abortSignal?: AbortSignal;
   toolTimeout?: number;
   messages?: Message[];
+  hooks?: AgentHooks;
 }
