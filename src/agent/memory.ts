@@ -1,9 +1,9 @@
 import type { ToolCallRecord } from "./types.js";
 
 export type Message =
-  | { role: "user"; content: string; active?: boolean; compacted?: boolean }
-  | { role: "assistant"; content: string; toolCalls?: ToolCallRecord[]; active?: boolean; compacted?: boolean }
-  | { role: "system"; content: string; active?: boolean; compacted?: boolean };
+  | { role: "user"; content: string; id?: string; active?: boolean; compacted?: boolean }
+  | { role: "assistant"; content: string; toolCalls?: ToolCallRecord[]; id?: string; active?: boolean; compacted?: boolean }
+  | { role: "system"; content: string; id?: string; active?: boolean; compacted?: boolean };
 
 export interface MemoryProvider {
   add(message: Message): void;
