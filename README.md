@@ -1,7 +1,5 @@
 <div align="center">
-  <img src="logo.png" alt="Protawk Agents Logo" width="200" style="margin-bottom: 20px;"/>
-
-  # @protawk/agents
+  <img src="logo.png" alt="Protawk Agents Logo" width="400" style="margin-bottom: 20px;"/>
 
   **Reusable TypeScript agent infrastructure for multi-tenant applications.**
 
