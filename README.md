@@ -6,7 +6,7 @@
   [![version](https://img.shields.io/badge/version-0.1.0-blue.svg?cacheSeconds=2592000)](https://github.com/protawk-com/agents)
   [![TypeScript](https://img.shields.io/badge/TypeScript-7.0.2-blue.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
   [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-green.svg?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
-  [![License](https://img.shields.io/badge/license-UNLICENSED-red.svg)](https://github.com/protawk-com/agents)
+  [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 </div>
 
 <br />
@@ -61,9 +61,3 @@ import {
 
 // Add your specific implementation here...
 ```
-
----
-
-<div align="center">
-  <i>Built for Protawk apps.</i>
-</div>
