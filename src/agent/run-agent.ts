@@ -18,6 +18,7 @@ import type {
   StreamAgentResult,
   ToolCallRecord,
   ToolErrorRecord,
+  ToolResultRecord,
 } from "./types.js";
 
 function toErrorMessage(error: unknown): string {
@@ -74,24 +75,161 @@ function deriveAbortSignal(
 function toCoreMessages(messages: Message[]): ModelMessage[] {
   return messages.map((msg) => {
     switch (msg.role) {
-      case "user":
-        return { role: "user" as const, content: msg.content };
-      case "assistant":
-        return { role: "assistant" as const, content: [{ type: "text" as const, text: msg.content }] };
+      case "user": {
+        let content = msg.content;
+        if (typeof content !== "string") {
+          content = JSON.stringify(content);
+        }
+        return { role: "user" as const, content: content as any };
+      }
+      case "assistant": {
+        const parts: any[] = [];
+        if (msg.content) {
+          parts.push({ type: "text", text: msg.content });
+        }
+        if (msg.toolCalls && msg.toolCalls.length > 0) {
+          for (const tc of msg.toolCalls) {
+            parts.push({
+              type: "tool-call",
+              toolCallId: tc.toolCallId,
+              toolName: tc.name,
+              input: tc.input,
+            });
+          }
+        }
+        return {
+          role: "assistant" as const,
+          content: parts.length > 0 ? parts : "",
+        };
+      }
+      case "tool": {
+        return {
+          role: "tool" as const,
+          content: msg.toolResults.map((toolResult) => ({
+            type: "tool-result" as const,
+            toolCallId: toolResult.toolCallId,
+            toolName: toolResult.name,
+            output: toolResult.output as any,
+          })),
+        };
+      }
       case "system":
-        return { role: "system" as const, content: msg.content };
+        return { role: "user" as const, content: msg.content };
     }
   });
 }
 
-function buildAssistantMessage(
-  content: string,
-  toolCalls: ToolCallRecord[],
-): Message {
-  if (toolCalls.length > 0) {
-    return { role: "assistant", content, toolCalls: [...toolCalls] };
+function toModelInput(messages: Message[]): {
+  instructions?: string;
+  messages: ModelMessage[];
+} {
+  const instructions = messages
+    .filter(
+      (message) => message.role === "system" && message.compacted !== true,
+    )
+    .map((message) => message.content)
+    .filter(Boolean)
+    .join("\n\n");
+  const conversationMessages = messages.filter(
+    (message) => message.role !== "system" || message.compacted === true,
+  );
+
+  return {
+    ...(instructions ? { instructions } : {}),
+    messages: toCoreMessages(conversationMessages),
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
   }
-  return { role: "assistant", content };
+  return {};
+}
+
+function textFromAssistantContent(content: ModelMessage["content"]): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  return content
+    .filter((part): part is { type: "text"; text: string } =>
+      part.type === "text" && typeof (part as any).text === "string",
+    )
+    .map((part) => part.text)
+    .join("");
+}
+
+function toInternalMessages(responseMessages: ModelMessage[]): Message[] {
+  return responseMessages.flatMap((message): Message[] => {
+    if (message.role === "assistant") {
+      const toolCalls: ToolCallRecord[] =
+        Array.isArray(message.content)
+          ? message.content
+              .filter((part) => part.type === "tool-call")
+              .map((part: any) => ({
+                toolCallId: part.toolCallId,
+                name: part.toolName,
+                input: part.input,
+              }))
+          : [];
+
+      return [
+        {
+          role: "assistant",
+          content: textFromAssistantContent(message.content),
+          ...(toolCalls.length > 0 ? { toolCalls } : {}),
+        },
+      ];
+    }
+
+    if (message.role === "tool") {
+      const toolResults: ToolResultRecord[] = message.content
+        .filter((part) => part.type === "tool-result")
+        .map((part: any) => ({
+          toolCallId: part.toolCallId,
+          name: part.toolName,
+          input: undefined,
+          output: part.output,
+        }));
+
+      if (toolResults.length === 0) return [];
+
+      return [
+        {
+          role: "tool",
+          content: JSON.stringify(toolResults),
+          toolResults,
+        },
+      ];
+    }
+
+    return [];
+  });
+}
+
+function normalizeToolCalls(toolCalls: any[]): ToolCallRecord[] {
+  return toolCalls.map((toolCall) => ({
+    toolCallId: toolCall.toolCallId,
+    name: toolCall.toolName,
+    input: toolCall.input,
+  }));
+}
+
+function normalizeToolResults(toolResults: any[]): ToolResultRecord[] {
+  return toolResults.map((toolResult) => ({
+    toolCallId: toolResult.toolCallId,
+    name: toolResult.toolName,
+    input: toolResult.input,
+    output: toolResult.output,
+  }));
+}
+
+function createDefaultModel(options: RunAgentOptions) {
+  const modelOptions: { apiKey?: string; modelId: string } = {
+    modelId: options.modelId ?? "google/gemini-2.5-flash",
+  };
+  if (options.apiKey) modelOptions.apiKey = options.apiKey;
+  return createOpenRouterModel(modelOptions);
 }
 
 function buildToolSet(
@@ -99,7 +237,6 @@ function buildToolSet(
   ctx: AgentContext,
   toolAbortSignal: AbortSignal | undefined,
   hooks: AgentHooks | undefined,
-  toolCalls: ToolCallRecord[],
   toolErrors: ToolErrorRecord[],
 ): ToolSet {
   return Object.fromEntries(
@@ -108,15 +245,20 @@ function buildToolSet(
       defineAiTool({
         description: registeredTool.description,
         inputSchema: jsonSchema(registeredTool.parameters),
-        execute: async (args: unknown) => {
-          const normalizedArgs = args as Record<string, unknown>;
+        execute: async (input: unknown, options: any) => {
+          const normalizedInput = input as Record<string, unknown>;
+          const toolCallId = options?.toolCallId as string;
 
           if (hooks?.onToolCall) {
-            await hooks.onToolCall({ name: registeredTool.name, args: normalizedArgs });
+            await hooks.onToolCall({
+              toolCallId,
+              name: registeredTool.name,
+              input: normalizedInput,
+            });
           }
 
           let executionPromise = registeredTool.execute({
-            args: normalizedArgs,
+            input: normalizedInput,
             ctx,
             signal: toolAbortSignal,
           });
@@ -127,20 +269,28 @@ function buildToolSet(
 
           try {
             const result = await executionPromise;
-            toolCalls.push({
+            hooks?.onToolResult?.({
+              toolCallId,
               name: registeredTool.name,
-              args: normalizedArgs,
+              input: normalizedInput,
+              result,
             });
-            hooks?.onToolResult?.({ name: registeredTool.name, args: normalizedArgs, result });
             return result;
           } catch (error) {
             const message = toErrorMessage(error);
             toolErrors.push({
+              toolCallId,
               name: registeredTool.name,
-              args: normalizedArgs,
+              input: normalizedInput,
               error: message,
             });
-            hooks?.onToolResult?.({ name: registeredTool.name, args: normalizedArgs, result: undefined, error: message });
+            hooks?.onToolResult?.({
+              toolCallId,
+              name: registeredTool.name,
+              input: normalizedInput,
+              result: undefined,
+              error: message,
+            });
             return { error: message };
           }
         },
@@ -154,7 +304,10 @@ function buildHistory(userPrompt: string, options: RunAgentOptions): Message[] {
   history.push({ role: "user", content: userPrompt });
 
   const systemPrompt = options.systemPrompt;
-  if (systemPrompt && history.length === 1) {
+  const hasSystemPrompt = history.some(
+    (message) => message.role === "system" && message.compacted !== true,
+  );
+  if (systemPrompt && !hasSystemPrompt) {
     history.unshift({ role: "system", content: systemPrompt });
   }
 
@@ -170,13 +323,12 @@ export async function runAgent(
   const toolTimeout = options.toolTimeout;
   const abortSignal = options.abortSignal;
   const registry = options.registry ?? defaultToolRegistry;
-  const toolCalls: ToolCallRecord[] = [];
   const toolErrors: ToolErrorRecord[] = [];
   const hooks = options.hooks;
   const toolAbortSignal = deriveAbortSignal(abortSignal, toolTimeout);
 
   const history = buildHistory(userPrompt, options);
-  const tools = buildToolSet(registry, ctx, toolAbortSignal, hooks, toolCalls, toolErrors);
+  const tools = buildToolSet(registry, ctx, toolAbortSignal, hooks, toolErrors);
 
   const compression = options.compression;
   if (compression && compression.shouldCompress(history)) {
@@ -184,17 +336,15 @@ export async function runAgent(
   }
 
   const activeMessages = history.filter(m => m.active !== false);
+  const modelInput = toModelInput(activeMessages);
 
   hooks?.onStepStart?.(1);
 
   const result = await generateText({
     model:
       options.model ??
-      createOpenRouterModel({
-        apiKey: options.apiKey,
-        modelId: options.modelId,
-      }),
-    messages: toCoreMessages(activeMessages),
+      createDefaultModel(options),
+    ...modelInput,
     tools,
     stopWhen: stepCountIs(maxSteps),
     ...(abortSignal ? { abortSignal } : {}),
@@ -202,21 +352,21 @@ export async function runAgent(
       hooks?.onStepFinish?.(
         step.stepNumber,
         step.text,
-        step.toolCalls?.map((tc) => ({
-          name: tc.toolName,
-          args: tc.input as Record<string, unknown>,
-        })) ?? [],
+        normalizeToolCalls(step.toolCalls ?? []),
       );
     },
   });
 
-  const assistantMessage = buildAssistantMessage(result.text, toolCalls);
-  history.push(assistantMessage);
+  const responseMessages = toInternalMessages(result.responseMessages);
+  history.push(...responseMessages);
+  const toolCalls = normalizeToolCalls(result.toolCalls);
+  const toolResults = normalizeToolResults(result.toolResults);
 
   return {
     content: result.text,
     messages: history,
     toolCalls,
+    toolResults,
     toolErrors,
   };
 }
@@ -230,13 +380,12 @@ export async function streamAgent(
   const toolTimeout = options.toolTimeout;
   const abortSignal = options.abortSignal;
   const registry = options.registry ?? defaultToolRegistry;
-  const toolCalls: ToolCallRecord[] = [];
   const toolErrors: ToolErrorRecord[] = [];
   const hooks = options.hooks;
   const toolAbortSignal = deriveAbortSignal(abortSignal, toolTimeout);
 
   const history = buildHistory(userPrompt, options);
-  const tools = buildToolSet(registry, ctx, toolAbortSignal, hooks, toolCalls, toolErrors);
+  const tools = buildToolSet(registry, ctx, toolAbortSignal, hooks, toolErrors);
 
   const compression = options.compression;
   if (compression && compression.shouldCompress(history)) {
@@ -244,17 +393,15 @@ export async function streamAgent(
   }
 
   const activeMessages = history.filter(m => m.active !== false);
+  const modelInput = toModelInput(activeMessages);
 
   hooks?.onStepStart?.(1);
 
   const stream = streamText({
     model:
       options.model ??
-      createOpenRouterModel({
-        apiKey: options.apiKey,
-        modelId: options.modelId,
-      }),
-    messages: toCoreMessages(activeMessages),
+      createDefaultModel(options),
+    ...modelInput,
     tools,
     stopWhen: stepCountIs(maxSteps),
     ...(abortSignal ? { abortSignal } : {}),
@@ -262,23 +409,26 @@ export async function streamAgent(
       hooks?.onStepFinish?.(
         step.stepNumber,
         step.text,
-        step.toolCalls?.map((tc) => ({
-          name: tc.toolName,
-          args: tc.input as Record<string, unknown>,
-        })) ?? [],
+        normalizeToolCalls(step.toolCalls ?? []),
       );
     },
   });
 
   const resultPromise = (async (): Promise<AgentRunResult> => {
-    const text = await stream.text;
-    const assistantMessage = buildAssistantMessage(text, toolCalls);
-    history.push(assistantMessage);
+    const [text, responseMessages, toolCalls, toolResults] = await Promise.all([
+      stream.text,
+      stream.responseMessages,
+      stream.toolCalls,
+      stream.toolResults,
+    ]);
+
+    history.push(...toInternalMessages(responseMessages));
 
     return {
       content: text,
       messages: history,
-      toolCalls,
+      toolCalls: normalizeToolCalls(toolCalls),
+      toolResults: normalizeToolResults(toolResults),
       toolErrors,
     };
   })();

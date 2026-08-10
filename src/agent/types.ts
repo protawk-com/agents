@@ -15,28 +15,38 @@ export interface Tool {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
-  execute(args: ToolExecuteArgs): Promise<unknown>;
+  execute(input: ToolExecuteInput): Promise<unknown>;
 }
 
-export interface ToolExecuteArgs {
-  args: Record<string, unknown>;
+export interface ToolExecuteInput {
+  input: Record<string, unknown>;
   ctx: AgentContext;
   signal?: AbortSignal;
 }
 
 export interface ToolCallRecord {
+  toolCallId: string;
   name: string;
-  args: Record<string, unknown>;
+  input: unknown;
 }
 
 export interface ToolErrorRecord extends ToolCallRecord {
   error: string;
 }
 
+export interface ToolResultRecord {
+  toolCallId: string;
+  name: string;
+  input: unknown;
+  output: unknown;
+  isError?: boolean;
+}
+
 export interface AgentRunResult {
   content: string;
   messages: Message[];
   toolCalls: ToolCallRecord[];
+  toolResults: ToolResultRecord[];
   toolErrors: ToolErrorRecord[];
 }
 

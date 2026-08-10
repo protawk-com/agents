@@ -15,14 +15,16 @@ function getEnv(name: string): string | undefined {
 }
 
 export function createOpenRouterModel(
-  options: OpenRouterModelOptions = {}
+  options: OpenRouterModelOptions = {},
 ): LanguageModel {
   const apiKey = options.apiKey ?? getEnv("OPENROUTER_API_KEY");
 
   if (!apiKey) {
-    throw new Error("OPENROUTER_API_KEY is required to create an OpenRouter model");
+    throw new Error(
+      "OPENROUTER_API_KEY is required to create an OpenRouter model",
+    );
   }
 
   const openrouter = createOpenRouter({ apiKey });
-  return openrouter(options.modelId);
+  return openrouter(options.modelId ?? "google/gemini-2.5-flash");
 }
