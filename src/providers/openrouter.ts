@@ -1,8 +1,6 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import type { LanguageModel } from "ai";
 
-export const DEFAULT_OPENROUTER_MODEL = "anthropic/claude-3.5-sonnet";
-
 export interface OpenRouterModelOptions {
   apiKey?: string;
   modelId?: string;
@@ -26,5 +24,5 @@ export function createOpenRouterModel(
   }
 
   const openrouter = createOpenRouter({ apiKey });
-  return openrouter(options.modelId ?? DEFAULT_OPENROUTER_MODEL);
+  return openrouter(options.modelId);
 }
