@@ -1,7 +1,7 @@
 import type { ToolCallRecord, ToolResultRecord } from "./types.js";
 
 export type Message =
-  | { role: "user"; content: string; id?: string; active?: boolean; compacted?: boolean }
+  | { role: "user"; content: string; id?: string; userId?: string | null; active?: boolean; compacted?: boolean }
   | { role: "assistant"; content: string; toolCalls?: ToolCallRecord[]; id?: string; active?: boolean; compacted?: boolean }
   | { role: "tool"; content: string; toolResults: ToolResultRecord[]; id?: string; active?: boolean; compacted?: boolean }
   | { role: "system"; content: string; id?: string; active?: boolean; compacted?: boolean };
