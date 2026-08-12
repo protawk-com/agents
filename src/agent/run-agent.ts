@@ -188,7 +188,7 @@ function toInternalMessages(responseMessages: ModelMessage[]): Message[] {
         .map((part: any) => ({
           toolCallId: part.toolCallId,
           name: part.toolName,
-          input: undefined,
+          input: part.input,
           output: part.output,
         }));
 
@@ -235,7 +235,8 @@ function createDefaultModel(options: RunAgentOptions) {
 function buildToolSet(
   registry: ToolRegistry,
   ctx: AgentContext,
-  toolAbortSignal: AbortSignal | undefined,
+  abortSignal: AbortSignal | undefined,
+  toolTimeout: number | undefined,
   hooks: AgentHooks | undefined,
   toolErrors: ToolErrorRecord[],
 ): ToolSet {
@@ -248,6 +249,7 @@ function buildToolSet(
         execute: async (input: unknown, options: any) => {
           const normalizedInput = input as Record<string, unknown>;
           const toolCallId = options?.toolCallId as string;
+          const toolAbortSignal = deriveAbortSignal(abortSignal, toolTimeout);
 
           if (hooks?.onToolCall) {
             await hooks.onToolCall({
@@ -325,10 +327,9 @@ export async function runAgent(
   const registry = options.registry ?? defaultToolRegistry;
   const toolErrors: ToolErrorRecord[] = [];
   const hooks = options.hooks;
-  const toolAbortSignal = deriveAbortSignal(abortSignal, toolTimeout);
 
   const history = buildHistory(userPrompt, options);
-  const tools = buildToolSet(registry, ctx, toolAbortSignal, hooks, toolErrors);
+  const tools = buildToolSet(registry, ctx, abortSignal, toolTimeout, hooks, toolErrors);
 
   const compression = options.compression;
   if (compression && compression.shouldCompress(history)) {
@@ -382,10 +383,9 @@ export async function streamAgent(
   const registry = options.registry ?? defaultToolRegistry;
   const toolErrors: ToolErrorRecord[] = [];
   const hooks = options.hooks;
-  const toolAbortSignal = deriveAbortSignal(abortSignal, toolTimeout);
 
   const history = buildHistory(userPrompt, options);
-  const tools = buildToolSet(registry, ctx, toolAbortSignal, hooks, toolErrors);
+  const tools = buildToolSet(registry, ctx, abortSignal, toolTimeout, hooks, toolErrors);
 
   const compression = options.compression;
   if (compression && compression.shouldCompress(history)) {
